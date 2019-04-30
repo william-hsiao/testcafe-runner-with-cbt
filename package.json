@@ -1,0 +1,17 @@
+{
+  "name": "testcafe-runner-with-cbt",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "request": "^2.88.0",
+    "request-promise": "^4.2.4",
+    "testcafe": "^1.1.3",
+    "testcafe-browser-provider-cbt": "^1.0.1"
+  }
+}
