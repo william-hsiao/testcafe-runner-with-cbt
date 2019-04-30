@@ -1,6 +1,7 @@
 const createTestCafe = require("testcafe");
 const cbtTunnelUtils = require("testcafe-browser-provider-cbt/lib/cbt/tunnels");
 const request = require("request-promise");
+const shortid = require("shortid");
 
 // export default {
 // }
@@ -16,23 +17,17 @@ let runners = [];
 let activeCount = 0;
 
 MAX_AVAILABLE_THREADS = undefined;
-MAX_THREADS = 1;
-
-process.env.CBT_TUNNEL_NAME = "test123";
+MAX_THREADS = 2;
 
 function run(browserss, filePaths) {
+  if (!process.env.CBT_TUNNEL_NAME)
+    process.env.CBT_TUNNEL_NAME = `testcafe-${shortid.generate()}`;
+
   createTestCafe()
     .then(async tc => {
       testcafe = tc;
       browsers = browserss;
       filePath = filePaths;
-
-      console.log(browsers);
-      console.log(filePath);
-
-      if (!process.env.CBT_TUNNEL_NAME)
-        await cbtTunnelUtils.generateTunnelName();
-      await cbtTunnelUtils.openTunnel(() => {});
 
       MAX_AVAILABLE_THREADS = await request({
         method: "GET",
@@ -45,63 +40,64 @@ function run(browserss, filePaths) {
         transform: body => body.automated
       });
 
-      console.log("MAX AVAILABLE THREADS: ", MAX_AVAILABLE_THREADS);
-    })
+      if (!process.env.CBT_TUNNEL_NAME)
+        await cbtTunnelUtils.generateTunnelName();
 
-    .then(async () => {
       await new Promise((resolve, reject) => {
-        queue = setInterval(async () => {
-          const activeTestCounts = await request({
-            method: "GET",
-            uri:
-              "https://crossbrowsertesting.com/api/v3/account/activeTestCounts",
-            auth: {
-              user: process.env.CBT_USERNAME,
-              pass: process.env.CBT_AUTHKEY
-            },
-            json: true
-          });
+        cbtTunnelUtils.openTunnel(() => {
+          queue = setInterval(async () => {
+            const activeTestCounts = await request({
+              method: "GET",
+              uri:
+                "https://crossbrowsertesting.com/api/v3/account/activeTestCounts",
+              auth: {
+                user: process.env.CBT_USERNAME,
+                pass: process.env.CBT_AUTHKEY
+              },
+              json: true
+            });
 
-          if (
-            MAX_AVAILABLE_THREADS !== activeTestCounts["team"]["automated"] &&
-            MAX_THREADS > activeTestCounts["member"]["automated"] &&
-            activeCount < MAX_THREADS
-          ) {
-            activeCount++;
-            runnerPromises.push(
-              new Promise(resolve => {
-                const runner = testcafe.createRunner();
-                runners.push(runner);
+            if (
+              MAX_AVAILABLE_THREADS !== activeTestCounts["team"]["automated"] &&
+              MAX_THREADS > activeTestCounts["member"]["automated"] &&
+              activeCount < MAX_THREADS
+            ) {
+              activeCount++;
+              runnerPromises.push(
+                new Promise(resolve => {
+                  const runner = testcafe.createRunner();
+                  runners.push(runner);
 
-                resolve(
-                  runner
-                    .src(filePath)
-                    .browsers(browsers[0])
-                    .run()
-                );
-              }).then(failedCount => {
-                activeCount--;
-                if (failedCount > 0) {
-                  hasFailed = true;
-                  clearInterval(queue);
+                  resolve(
+                    runner
+                      .src(filePath)
+                      .browsers(browsers[0])
+                      .run()
+                  );
+                }).then(failedCount => {
+                  activeCount--;
+                  if (failedCount > 0) {
+                    hasFailed = true;
+                    clearInterval(queue);
 
-                  runners.forEach(runner => runner.cancel());
-                  reject();
-                }
-              })
-            );
+                    runners.forEach(runner => runner.cancel());
+                    reject();
+                  }
+                })
+              );
 
-            browsers.splice(0, 1);
+              browsers.splice(0, 1);
 
-            if (browsers.length === 0) {
-              clearInterval(queue);
+              if (browsers.length === 0) {
+                clearInterval(queue);
 
-              await Promise.all(runnerPromises).then(() => {
-                resolve();
-              });
+                await Promise.all(runnerPromises).then(() => {
+                  resolve();
+                });
+              }
             }
-          }
-        }, 1000);
+          }, 3000);
+        });
       });
     })
 
