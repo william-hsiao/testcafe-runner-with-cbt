@@ -17,7 +17,7 @@ let runnerInstances = [];
 let runnerPromises = [];
 let activeCount = 0;
 
-MAX_AVAILABLE_THREADS = undefined;
+MAX_AVAILABLE_THREADS = 0;
 MAX_THREADS = 2;
 
 async function getMaxParallelLimit() {
@@ -49,7 +49,6 @@ async function getActiveTestCounts() {
 async function createRunnerInstance() {
   return new Promise(resolve => {
     promise = runner.src(filePath).browsers(browsers[0]).reporter('json').run();
-    
     runnerPromises.push(promise);
     resolve(promise);
   })
@@ -57,6 +56,20 @@ async function createRunnerInstance() {
     activeCount--;
     if (failedCount > 0) hasFailed = true;
   })
+}
+
+async function waitForTestsToComplete(resolve) {
+  clearInterval(queue);
+  return await Promise.all(runnerInstances).then(() => {
+    resolve();
+  });
+}
+
+async function hasAvailableThread() {
+  const activeTestCounts = await getActiveTestCounts();
+  return MAX_AVAILABLE_THREADS !== activeTestCounts["team"]["automated"] &&
+  MAX_THREADS > activeTestCounts["member"]["automated"] &&
+  activeCount < MAX_THREADS
 }
 
 function run(browserss, filePaths) {
@@ -77,34 +90,19 @@ function run(browserss, filePaths) {
 
       await new Promise(resolve => {
         cbtTunnelUtils.openTunnel(() => {
-
           queue = setInterval(async () => {
-            const activeTestCounts = await getActiveTestCounts();
-
             if (hasFailed) {
               browsers = [];
-              clearInterval(queue);
+              return await waitForTestsToComplete(resolve);
+            }
 
-              await Promise.all(runnerInstances).then(() => {
-                resolve();
-              });
-            } else if (
-              MAX_AVAILABLE_THREADS !== activeTestCounts["team"]["automated"] &&
-              MAX_THREADS > activeTestCounts["member"]["automated"] &&
-              activeCount < MAX_THREADS
-            ) {
+            if (await hasAvailableThread()) {
               runnerInstances.push(createRunnerInstance());
 
               activeCount++;
               browsers.splice(0, 1);
 
-              if (browsers.length === 0) {
-                clearInterval(queue);
-
-                await Promise.all(runnerInstances).then(() => {
-                  resolve();
-                });
-              }
+              if (browsers.length === 0) return await waitForTestsToComplete(resolve);
             }
           }, 3000);
         });
