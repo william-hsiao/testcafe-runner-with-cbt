@@ -7,17 +7,57 @@ const shortid = require("shortid");
 // }
 
 let testcafe = null;
+let runner = null;
 let filePath = "";
 let browsers = [];
 let hasFailed = false;
 
 let queue = null;
+let runnerInstances = [];
 let runnerPromises = [];
-let runners = [];
 let activeCount = 0;
 
 MAX_AVAILABLE_THREADS = undefined;
 MAX_THREADS = 2;
+
+async function getMaxParallelLimit() {
+  return request({
+    method: "GET",
+    uri: "https://crossbrowsertesting.com/api/v3/account/maxParallelLimits",
+    auth: {
+      user: process.env.CBT_USERNAME,
+      pass: process.env.CBT_AUTHKEY
+    },
+    json: true,
+    transform: body => body.automated
+  });
+}
+
+async function getActiveTestCounts() {
+  return request({
+    method: "GET",
+    uri:
+      "https://crossbrowsertesting.com/api/v3/account/activeTestCounts",
+    auth: {
+      user: process.env.CBT_USERNAME,
+      pass: process.env.CBT_AUTHKEY
+    },
+    json: true
+  });
+}
+
+async function createRunnerInstance() {
+  return new Promise(resolve => {
+    promise = runner.src(filePath).browsers(browsers[0]).reporter('json').run();
+    
+    runnerPromises.push(promise);
+    resolve(promise);
+  })
+  .then(async failedCount => {
+    activeCount--;
+    if (failedCount > 0) hasFailed = true;
+  })
+}
 
 function run(browserss, filePaths) {
   if (!process.env.CBT_TUNNEL_NAME)
@@ -26,72 +66,42 @@ function run(browserss, filePaths) {
   createTestCafe()
     .then(async tc => {
       testcafe = tc;
+      runner = tc.createRunner();
       browsers = browserss;
       filePath = filePaths;
 
-      MAX_AVAILABLE_THREADS = await request({
-        method: "GET",
-        uri: "https://crossbrowsertesting.com/api/v3/account/maxParallelLimits",
-        auth: {
-          user: process.env.CBT_USERNAME,
-          pass: process.env.CBT_AUTHKEY
-        },
-        json: true,
-        transform: body => body.automated
-      });
+      MAX_AVAILABLE_THREADS = await getMaxParallelLimit();
 
       if (!process.env.CBT_TUNNEL_NAME)
         await cbtTunnelUtils.generateTunnelName();
 
-      await new Promise((resolve, reject) => {
+      await new Promise(resolve => {
         cbtTunnelUtils.openTunnel(() => {
-          queue = setInterval(async () => {
-            const activeTestCounts = await request({
-              method: "GET",
-              uri:
-                "https://crossbrowsertesting.com/api/v3/account/activeTestCounts",
-              auth: {
-                user: process.env.CBT_USERNAME,
-                pass: process.env.CBT_AUTHKEY
-              },
-              json: true
-            });
 
-            if (
+          queue = setInterval(async () => {
+            const activeTestCounts = await getActiveTestCounts();
+
+            if (hasFailed) {
+              browsers = [];
+              clearInterval(queue);
+
+              await Promise.all(runnerInstances).then(() => {
+                resolve();
+              });
+            } else if (
               MAX_AVAILABLE_THREADS !== activeTestCounts["team"]["automated"] &&
               MAX_THREADS > activeTestCounts["member"]["automated"] &&
               activeCount < MAX_THREADS
             ) {
+              runnerInstances.push(createRunnerInstance());
+
               activeCount++;
-              runnerPromises.push(
-                new Promise(resolve => {
-                  const runner = testcafe.createRunner();
-                  runners.push(runner);
-
-                  resolve(
-                    runner
-                      .src(filePath)
-                      .browsers(browsers[0])
-                      .run()
-                  );
-                }).then(failedCount => {
-                  activeCount--;
-                  if (failedCount > 0) {
-                    hasFailed = true;
-                    clearInterval(queue);
-
-                    runners.forEach(runner => runner.cancel());
-                    reject();
-                  }
-                })
-              );
-
               browsers.splice(0, 1);
 
               if (browsers.length === 0) {
                 clearInterval(queue);
 
-                await Promise.all(runnerPromises).then(() => {
+                await Promise.all(runnerInstances).then(() => {
                   resolve();
                 });
               }
@@ -100,12 +110,11 @@ function run(browserss, filePaths) {
         });
       });
     })
-
     .then(async () => {
       testcafe.close();
       await cbtTunnelUtils.closeTunnel();
       if (hasFailed) process.exit(1);
-    });
+    })
 }
 
 run(
